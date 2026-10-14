@@ -20,7 +20,7 @@
  * THE SOFTWARE.
  */
 
-#include "metrics.h"
+#include "metrics.hh"
 #include <iostream>
 #include <thread>
 #include <vector>

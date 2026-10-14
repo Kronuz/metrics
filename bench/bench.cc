@@ -20,7 +20,7 @@
  * THE SOFTWARE.
  */
 
-#include "metrics.h"
+#include "metrics.hh"
 #include <chrono>
 #include <cstdint>
 #include <iostream>
