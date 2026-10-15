@@ -1,5 +1,7 @@
 # metrics
 
+[![CI](https://github.com/Kronuz/metrics/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/metrics/actions/workflows/ci.yml)
+
 Bounded counters and duration histograms for C++20, header-only, with no dependencies.
 
 - `kronuz::metrics::Counter`: a single-owner `std::uint64_t` counter. `add(n)` saturates at
