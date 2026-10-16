@@ -6,6 +6,7 @@
 metrics.hh        Counter, AtomicCounter, DurationHistogram, DurationSnapshot.
 test/test.cc      Saturation, maxima, bucket bounds, concurrent atomic updates.
 bench/bench.cc    Update cost of each counter and histogram.
+docs/metrics.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/metrics.d2 docs/metrics.svg
 ```
 
 ## Invariants

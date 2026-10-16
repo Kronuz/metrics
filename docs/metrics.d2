@@ -1,0 +1,14 @@
+# metrics: 15 duration buckets. Render: d2 --layout elk --sketch --theme 302 docs/metrics.d2 docs/metrics.svg
+direction: right
+obs: "observe(ns)" {shape: oval}
+h: "DurationHistogram" {
+  grid-columns: 5
+  b0: "≤1 µs"
+  b1: "≤4 µs"
+  b2: "≤16 µs"
+  dots: "… ×4 …"
+  b14: ">64 s"
+}
+snap: "snapshot()\nbuckets · count · sum · max" {shape: page}
+obs -> h: "binary search\n14 bounds"
+h -> snap
