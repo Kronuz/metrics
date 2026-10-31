@@ -91,5 +91,33 @@ int main() {
 		CHECK(exact.get() == 20000ull * 36);
 		CHECK(sat.get() == kMax);
 	}
+	// Saturation visibility: once pinned, concurrent adds never expose a smaller value.
+	for (std::uint64_t pin : {kMax, kMax - 3}) {
+		AtomicCounter c;
+		c.add(pin);
+		c.add(10);
+		CHECK(c.get() == kMax);
+		std::atomic<bool> stop{false};
+		std::vector<std::thread> ws;
+		for (int i = 0; i < 4; ++i) ws.emplace_back([&] { while (!stop) { c.add(1); c.add(kMax); } });
+		long low = 0;
+		for (int i = 0; i < 2000000; ++i) low += c.get() != kMax;
+		stop = true;
+		for (auto& t : ws) t.join();
+		CHECK(low == 0 && c.get() == kMax);
+	}
+	// Saturating from below under contention, readers see a monotonic value.
+	{
+		AtomicCounter c;
+		std::atomic<bool> stop{false};
+		std::vector<std::thread> ws;
+		for (int i = 0; i < 4; ++i) ws.emplace_back([&] { while (!stop) c.add(kMax / 3); });
+		std::uint64_t prev = 0;
+		long regress = 0;
+		for (int i = 0; i < 2000000; ++i) { auto v = c.get(); regress += v < prev; prev = v; }
+		stop = true;
+		for (auto& t : ws) t.join();
+		CHECK(regress == 0 && c.get() == kMax);
+	}
 	std::puts("metrics differential tests passed");
 }
