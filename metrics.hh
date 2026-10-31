@@ -42,19 +42,8 @@ class Counter {
 };
 class AtomicCounter {
   public:
-	// Saturating add; a reader never observes a value below an earlier one (no
-	// wrap), so after saturation every read is the maximum.
-	//
-	// Fast path: one fetch_add (no CAS retry, so contended adds do not spin),
-	// taken only when the counter was below 2^63 and amount is below 2^32.
-	// Each thread has at most one such add in flight, so with fewer than 2^31
-	// threads the value cannot exceed 2^63 + threads * 2^32 < 2^64 and the
-	// fetch_add cannot wrap. Anything else (a large amount, or a counter that
-	// is near the top or already pinned) takes the CAS loop, which clamps.
-	// This presumes a counter is used either as an accumulator (add) or as a
-	// high-water mark (observe_max), not both concurrently: an observe_max
-	// that jumps the value above 2^63 between the load and the fetch_add
-	// could let that one add wrap.
+	// Saturating add that never wraps: fetch_add below 2^63 for amounts below
+	// 2^32, a clamping CAS loop otherwise. Don't mix with observe_max; see AGENTS.md.
 	void add(std::uint64_t amount = 1) noexcept {
 		constexpr std::uint64_t fast_value = std::uint64_t(1) << 63, fast_amount = std::uint64_t(1) << 32;
 		auto current = value_.load(std::memory_order_relaxed);

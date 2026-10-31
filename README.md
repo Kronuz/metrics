@@ -24,7 +24,7 @@ Counters saturate instead of wrapping, and nothing allocates.
   `AtomicDurationHistogram` uses `AtomicCounter`. `snapshot()` copies the state out as a
   plain `DurationSnapshot`.
 
-Nothing allocates, and an update is a few instructions: the bucket is a binary search
+Nothing allocates, and an update is a few instructions: the bucket index is a branchless count
 over 14 constant bounds.
 
 ## 📦 Installation
@@ -68,19 +68,28 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 ## ⚡ Contended counters
 
 `AtomicCounter::add` takes one `fetch_add` while the counter is below 2^63 and
-the amount below 2^32 (so it provably cannot wrap with fewer than 2^31
-threads), and a clamping CAS loop otherwise. Saturation is exact: once pinned
-at `UINT64_MAX`, no reader ever sees a smaller value. (Use a counter either
-with `add` or with `observe_max`, not both concurrently.) The previous CAS loop retried under contention. Apple arm64,
-ns per add per thread (shared host, best of 5): 4 threads 65.7 -> 24.5, 8
-threads 404 -> 154, matching a bare `fetch_add` (23.7 / 165); 1-2 threads are
-unchanged. The histogram bucket index is the count of bounds below the value
-(branchless) instead of `std::lower_bound`. Reproduce with the
-`metrics_counter_bench` target.
+the amount below 2^32, so it cannot wrap with fewer than 2^31 threads. Any
+other add takes a clamping CAS loop. Saturation is exact: once pinned at
+`UINT64_MAX`, no reader sees a smaller value. Use a counter either with `add`
+or with `observe_max`, not both concurrently.
+
+The histogram bucket index is the count of bounds below the value, a
+branchless loop.
+
+## 📊 Performance
+
+Apple arm64, ns per `add` per thread, shared host, best of 5: 24.5 at 4 threads
+and 154 at 8 threads, against a bare `fetch_add` at 23.7 and 165.
+
+```sh
+cmake -S . -B build && cmake --build build --target metrics_counter_bench
+./build/metrics_counter_bench
+```
 
 ## 📚 Documentation
 
 - [AGENTS.md](AGENTS.md): repository map and invariants.
+- [CHANGELOG.md](CHANGELOG.md): what changed.
 
 ## 🤝 Contributing
 
