@@ -42,10 +42,14 @@ class Counter {
 };
 class AtomicCounter {
   public:
+	// One fetch_add (no CAS retry loop, so contended adds do not spin). If the sum
+	// wrapped, the counter is pinned to the maximum on this cold path. Concurrent
+	// readers can observe the wrapped value for an instant while a saturating add is
+	// in flight, which takes 2^64 accumulated units to reach.
 	void add(std::uint64_t amount = 1) noexcept {
-		auto value = value_.load(std::memory_order_relaxed);
-		while (!value_.compare_exchange_weak(value, value + std::min(amount, maximum - value),
-											 std::memory_order_relaxed)) {
+		auto previous = value_.fetch_add(amount, std::memory_order_relaxed);
+		if (previous > maximum - amount) [[unlikely]] {
+			value_.store(maximum, std::memory_order_relaxed);
 		}
 	}
 	void observe_max(std::uint64_t value) noexcept {
@@ -71,9 +75,13 @@ struct DurationSnapshot {
 template <class CounterType = Counter> class DurationHistogram {
   public:
 	void observe(std::uint64_t nanoseconds) noexcept {
-		auto bucket = std::lower_bound(duration_bounds_ns.begin(), duration_bounds_ns.end(), nanoseconds) -
-					  duration_bounds_ns.begin();
-		buckets_[static_cast<std::size_t>(bucket)].add();
+		// The index of the first bound >= nanoseconds is the number of bounds below it
+		// (the bounds are sorted); counting is branchless, std::lower_bound is not.
+		std::size_t bucket = 0;
+		for (auto bound : duration_bounds_ns) {
+			bucket += bound < nanoseconds;
+		}
+		buckets_[bucket].add();
 		count_.add();
 		sum_.add(nanoseconds);
 		maximum_.observe_max(nanoseconds);

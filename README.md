@@ -65,6 +65,18 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 - ✅ Hot-path counters and latency histograms with fixed memory.
 - ❌ Exporting: snapshots are plain structs; formatting for Prometheus or similar is yours.
 
+## ⚡ Contended counters
+
+`AtomicCounter::add` is one `fetch_add`; if the sum wrapped, the counter is
+pinned to the maximum on a cold path, so saturation at `UINT64_MAX` is unchanged
+(a concurrent reader can see the wrapped value for an instant while such an add
+is in flight). The previous CAS loop retried under contention. Apple arm64,
+ns per add per thread (shared host, best of 5): 4 threads 65.7 -> 24.5, 8
+threads 404 -> 154, matching a bare `fetch_add` (23.7 / 165); 1-2 threads are
+unchanged. The histogram bucket index is the count of bounds below the value
+(branchless) instead of `std::lower_bound`. Reproduce with the
+`metrics_counter_bench` target.
+
 ## 📚 Documentation
 
 - [AGENTS.md](AGENTS.md): repository map and invariants.
