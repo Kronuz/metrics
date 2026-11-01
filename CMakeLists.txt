@@ -32,9 +32,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_test(NAME metrics_seeded COMMAND metrics_seeded)
   set_tests_properties(metrics_seeded PROPERTIES TIMEOUT 300)
 
-  # Benchmarks (off by default): update cost of each counter and histogram (metrics_bench, built
-  # with the build type's flags: use Release), and contended adds against a bare fetch_add and a
-  # compare-exchange loop (metrics_counter_bench, always -O3):
+  # Benchmarks (off by default): update cost of each histogram against a hand-written one
+  # (metrics_bench), and contended adds against a bare fetch_add and a compare-exchange loop
+  # (metrics_counter_bench); both are built with -O3 -DNDEBUG:
   #   cmake -B build -DMETRICS_BUILD_BENCH=ON && cmake --build build
   #   ./build/metrics_bench; ./build/metrics_counter_bench
   option(METRICS_BUILD_BENCH "Build bench/bench.cc and bench/counter_bench.cc" OFF)
@@ -45,5 +45,6 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
     add_executable(metrics_bench bench/bench.cc)
     target_link_libraries(metrics_bench PRIVATE metrics)
+    target_compile_options(metrics_bench PRIVATE -O3 -DNDEBUG)
   endif()
 endif()

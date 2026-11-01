@@ -95,22 +95,31 @@ Not for:
 
 ## ⚡ Performance
 
-ns per `add(1)` per thread, every thread adding to one counter
-(`metrics_counter_bench`, `-O3`), best of 5, the range over two runs:
+[`metrics_counter_bench`](bench/counter_bench.cc) has every thread add 1 to one counter
+(2,000,000 adds per thread) and reports ns per add per thread, so a higher number at more
+threads is contention. `AtomicCounter` is one word updated by a compare-exchange loop;
+`ContendedCounter` is two words, where an add below 2^32 is one `fetch_add` that never
+retries. Both saturate at 2^64 - 1. The comparator is the obvious hand-written counter,
+a bare relaxed `std::atomic<std::uint64_t>::fetch_add`, which wraps instead of saturating;
+every counter must end at the number of adds made, and the program prints `MISMATCH` when
+one does not. Cells are the better of two runs of best-of-5; "× faster" is `AtomicCounter`'s time over `ContendedCounter`'s, so a value below 1
+is a loss.
 
-| | 1 thread | 2 threads | 4 threads | 8 threads |
-|---|---|---|---|---|
-| `AtomicCounter`, Apple M4 Pro | 2.1 | 5.2 to 5.3 | 67.9 to 68.7 | 337 to 342 |
-| `ContendedCounter`, Apple M4 Pro | 1.9 | 6.8 to 7.1 | 34.1 to 42.7 | 194 to 200 |
-| `AtomicCounter`, Intel Core i9-9980HK | 7.8 to 8.2 | 67.1 to 76.4 | 214 to 230 | 530 to 626 |
-| `ContendedCounter`, Intel Core i9-9980HK | 7.5 to 7.8 | 43.1 to 50.1 | 88.3 to 89.0 | 180 to 192 |
+| Threads | M4 Pro `AtomicCounter` | M4 Pro `ContendedCounter` | M4 Pro × faster | i9 `AtomicCounter` | i9 `ContendedCounter` | i9 × faster |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2.1 | 1.9 | 1.11 | 7.8 | 7.5 | 1.04 |
+| 2 | 5.2 | 6.8 | 0.76 | 67.1 | 43.1 | 1.56 |
+| 4 | 67.9 | 34.1 | 1.99 | 214 | 88.3 | 2.42 |
+| 8 | 337 | 194 | 1.74 | 530 | 180 | 2.94 |
 
-A bare `fetch_add` with no saturation costs 7.0 ns at two threads and 190 ns at
-eight on the M4 Pro, and 28 and 140 ns on the i9. One `observe` on a histogram,
-one thread (`metrics_bench`): `DurationHistogram<>` takes 2.4 to 2.7 ns on the
-M4 Pro and 6.0 to 6.8 ns on the i9, `AtomicDurationHistogram` 2.9 to 3.2 and
-17.8 to 18.9, and `ContendedDurationHistogram` 2.8 to 3.1 and 17.3 to 18.1
-(288 bytes instead of 144).
+A bare `fetch_add` costs 7.0 ns at two threads and 190 ns at eight on the M4 Pro, and 28 and
+140 ns on the i9. One `observe` on a histogram, one thread (`metrics_bench`, net of the loop
+that draws the values): `DurationHistogram<>` takes 2.4 to 2.7 ns on the M4 Pro and 6.0 to
+6.8 ns on the i9, `AtomicDurationHistogram` 2.9 to 3.2 and 17.8 to 18.9, and
+`ContendedDurationHistogram` 2.8 to 3.1 and 17.3 to 18.1 (288 bytes instead of 144).
+
+Apple M4 Pro (macOS 26) and Intel Core i9-9980HK (macOS 15, x86-64), Apple clang 17.0.0 with
+`-O3 -DNDEBUG`.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMETRICS_BUILD_BENCH=ON

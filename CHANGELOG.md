@@ -30,6 +30,10 @@ releases, so entries are dated.
 
 - `metrics_bench` and `metrics_counter_bench` build only with `-DMETRICS_BUILD_BENCH=ON`
   (`metrics_bench` was built by default).
+- `metrics_bench` prints ns per `observe()` net of the loop that draws the values, beside two
+  hand-written histograms (`std::lower_bound` over the bounds, plain and with relaxed atomics),
+  and fails when a snapshot differs from `DurationHistogram<>`'s; it was a CSV of wall times.
+  Both benchmarks are built with `-O3 -DNDEBUG`.
 
 ## 2026-10-31
 

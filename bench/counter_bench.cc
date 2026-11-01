@@ -1,5 +1,8 @@
-// Contended AtomicCounter and ContendedCounter add against the original CAS-loop saturating
-// add and a bare fetch_add (comparator, no saturation). ns per add per thread, best of 5.
+// Every thread adds 1 to one counter, 2,000,000 times: ns per add per thread, best of 5.
+// AtomicCounter and ContendedCounter are the library's two shared counters. The comparators are
+// the two obvious hand-written counters: a saturating compare-exchange loop (CasCounter) and a
+// bare relaxed fetch_add (FetchAddCounter, which wraps instead of saturating). Every counter
+// must end at threads x 2,000,000, and the program prints MISMATCH when one does not.
 #include "metrics.hh"
 
 #include <algorithm>
@@ -48,7 +51,7 @@ static double run(int threads) {
 
 int main() {
 	for (int t : {1, 2, 4, 8})
-		std::printf("threads=%d  CAS loop %6.1f   AtomicCounter %6.1f   ContendedCounter %6.1f   bare fetch_add %6.1f  ns/add\n",
-		            t, run<CasCounter>(t), run<kronuz::metrics::AtomicCounter>(t),
-		            run<kronuz::metrics::ContendedCounter>(t), run<FetchAddCounter>(t));
+		std::printf("threads=%d  AtomicCounter %6.1f   ContendedCounter %6.1f   CAS loop %6.1f   bare fetch_add %6.1f  ns/add\n",
+		            t, run<kronuz::metrics::AtomicCounter>(t), run<kronuz::metrics::ContendedCounter>(t),
+		            run<CasCounter>(t), run<FetchAddCounter>(t));
 }
