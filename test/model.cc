@@ -661,6 +661,39 @@ int main() {
 		CHECK(failure.empty() == (threads == 8));
 	}
 
+	// Several adds per thread, from states around the thresholds. A thread's later add loads what
+	// its own earlier one left, and the first add of the other thread can land in between; the
+	// families above give each thread one add from a nonzero state. Fast amounts are 15 and
+	// below, 16 and above go to `large_`.
+	std::vector<Scenario> repeated_contended, repeated_cas;
+	for (W s : {W(120), W(127)}) {
+		append(repeated_contended, grid({s}, 2, 3, {15, 16}, 's', true));
+	}
+	append(repeated_contended, grid({W(127), W(240)}, 2, 2, {1, 15, 16, 255}));  // saturated from the start
+	for (W s : {W(127), W(128), W(200), W(254)}) {
+		append(repeated_cas, grid({s}, 2, 2, {1, 127, 255}));
+	}
+	if (full) {
+		append(repeated_contended, grid({W(127)}, 3, 2, {15, 16}));
+		append(repeated_cas, grid({W(127)}, 2, 3, {1, 255}));
+	}
+	expect_holds<Contended>("ContendedCounter repeated adds", repeated_contended);
+	expect_holds<Cas>("AtomicCounter repeated adds", repeated_cas);
+
+	// Every interleaving of n threads that each add 15 to `small_` at 127, and of four at 120: the
+	// exhaustive version of the single schedule above, under the eight-thread bound. n = 5, and five
+	// threads adding 31, only in a full build.
+	std::vector<Scenario> in_flight;
+	in_flight.push_back(add_scenario({W(127)}, std::vector<std::vector<W>>(4, {15})));
+	in_flight.push_back(add_scenario({W(120)}, std::vector<std::vector<W>>(4, {15})));
+	if (full) {
+		in_flight.push_back(add_scenario({W(127)}, std::vector<std::vector<W>>(5, {15})));
+		// 31 is the smallest amount that goes to `large_`, twice the largest fast one by one bit:
+		// five of them in flight would wrap `small_` if fast amounts were one bit wider.
+		in_flight.push_back(add_scenario({W(127)}, std::vector<std::vector<W>>(5, {31})));
+	}
+	expect_holds<Contended>("ContendedCounter adds in flight, all", in_flight);
+
 	// The checker must reject the broken counters.
 	std::vector<Scenario> probes = grid({}, 2, 1, {1, 255});
 	append(probes, grid({250, 0}, 2, 1, {7, 15}));

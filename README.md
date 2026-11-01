@@ -61,7 +61,6 @@ auto s = latency.snapshot();             // s.buckets, s.count, s.sum_ns, s.maxi
 
 ```sh
 cmake -S . -B build && cmake --build build && ctest --test-dir build
-./build/metrics_bench
 ```
 
 ## 🎯 When to use it
@@ -103,10 +102,17 @@ load, store, `fetch_add` and compare-exchange is one step. It explores every int
 to four threads of adds, `observe_max` and `get()` from initial states around the thresholds, and
 checks that the value never decreases, that it stays between the saturated totals of the finished
 and the started operations, that each `get()` returns a value from between its first and last
-step, and that the final value is exact. It also rejects seven broken counters, among them a
-single-word `fetch_add` fast path. `test/differential.cc` checks both counters at 64 and 16 bits
+step, and that the final value is exact. It includes several adds per thread from nonzero
+states and every interleaving of four and five threads adding 15 at `small_` = 127, and of five adding
+31, below the eight-thread bound, besides the schedule that crosses the bound. It also rejects seven broken
+counters, among them a single-word `fetch_add` fast path. `test/differential.cc` checks both counters at 64 and 16 bits
 against a frozen compare-exchange counter, including small adds racing a large one with a
-reader, and runs under ThreadSanitizer.
+reader, and runs under ThreadSanitizer. `test/seeded.cc` builds both counters at 64 bits over an
+atomic that records its words, stores starting values just below, at and above 2^63 and near 2^64
+into them, and checks every add and every concurrent run against a 128-bit oracle: the 64-bit
+`small_` check cannot be reached by real adds. `tools/mutants.py` breaks `metrics.hh` in fifteen
+ways (the single-word `fetch_add`, the `small_` check, the clamps, the bucket bounds) and requires a
+test to fail on each.
 
 ## 📊 Performance
 
@@ -130,8 +136,8 @@ and the `fetch_add`.
 17.3-18.1 (288 bytes instead of 144).
 
 ```sh
-cmake -S . -B build && cmake --build build --target metrics_counter_bench
-./build/metrics_counter_bench
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMETRICS_BUILD_BENCH=ON && cmake --build build
+./build/metrics_counter_bench && ./build/metrics_bench
 ```
 
 ## 📚 Documentation

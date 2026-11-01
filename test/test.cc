@@ -26,6 +26,14 @@
 #include <vector>
 
 using namespace kronuz::metrics;
+
+// The bucket bounds are part of every consumer's exported histograms: pinned by value here, since
+// the tests below read them from the header.
+static_assert(duration_bounds_ns ==
+              std::array<std::uint64_t, 14>{1'000, 4'000, 16'000, 64'000, 256'000, 1'000'000, 4'000'000, 16'000'000,
+                                            64'000'000, 256'000'000, 1'000'000'000, 4'000'000'000,
+                                            16'000'000'000, 64'000'000'000});
+
 int main() {
 	try {
 		auto require = [](bool value) {
@@ -39,6 +47,12 @@ int main() {
 		require(counter.get() == std::numeric_limits<std::uint64_t>::max());
 		counter.add();
 		require(counter.get() == std::numeric_limits<std::uint64_t>::max());
+		Counter largest;
+		largest.observe_max(5);
+		largest.observe_max(3);
+		require(largest.get() == 5);
+		largest.observe_max(9);
+		require(largest.get() == 9);
 		DurationHistogram histogram;
 		histogram.observe(0);
 		for (auto edge : duration_bounds_ns) {
@@ -51,6 +65,8 @@ int main() {
 		histogram.observe(std::numeric_limits<std::uint64_t>::max());
 		histogram.observe(1);
 		require(histogram.snapshot().sum_ns == std::numeric_limits<std::uint64_t>::max());
+		// The maximum is the largest value observed, not the last.
+		require(histogram.snapshot().maximum_ns == std::numeric_limits<std::uint64_t>::max());
 		auto observe_concurrently = [&](auto &concurrent) {
 			std::vector<std::thread> threads;
 			for (unsigned thread = 0; thread < 8; ++thread) {

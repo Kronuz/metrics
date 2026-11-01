@@ -4,6 +4,33 @@ All notable changes to `metrics`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the library has no
 releases, so entries are dated.
 
+## 2026-11-01
+
+### Added
+
+- `test/model.cc` checks more of the proof of `ContendedCounter` and `AtomicCounter`: several
+  adds per thread from states around the thresholds (two threads of three adds with a reader,
+  two of two, and in a full build three threads of two), and every interleaving of four
+  threads at `small_` = 127 and 120, and of five at 127 in a full build, each adding 15, and of
+  five adding 31 (a fast amount one bit wider would wrap `small_`), below the eight-thread
+  bound. The bound itself was checked on one schedule. At `-O2` on an Apple M4 Pro the model
+  takes 12 s instead of 10 s.
+- `test/seeded.cc` (CTest `metrics_seeded`): both counters at 64 bits from starting words
+  just below and at 2^63, within a few adds of 2^64 and near the maximum, set through an atomic
+  that records its words, against a 128-bit oracle after every add and in concurrent runs. The
+  64-bit `small_` check cannot be reached by real adds, so the 64-bit instance of
+  `test/differential.cc` did not catch its removal; this test does.
+- `tools/mutants.py`: 15 edits of `metrics.hh` (the single-word `fetch_add` fast path of CA2,
+  the `small_` check removed, the fast amounts widened, the clamps and the bucket bounds), each
+  of which a test must fail on. It found that no test pinned the bucket bounds or
+  `Counter::observe_max`: `test/test.cc` now asserts the bounds by value and the maximum of a
+  histogram after a smaller value follows a larger one.
+
+### Changed
+
+- `metrics_bench` and `metrics_counter_bench` build only with `-DMETRICS_BUILD_BENCH=ON`
+  (`metrics_bench` was built by default).
+
 ## 2026-10-31
 
 ### Fixed

@@ -9,8 +9,10 @@ test/test.cc      Saturation, maxima, bucket bounds, concurrent atomic updates.
 test/differential.cc  Both atomic counters, at 64 and 16 bits, against a frozen CAS counter (sequences, totals,
                   pinned values, monotonic readers, small adds racing a pin); buckets against std::lower_bound.
 test/model.cc     Every interleaving of both atomic counters at 8 bits, and the broken counters it must reject.
-bench/bench.cc    Update cost of each counter and histogram (metrics_bench).
-bench/counter_bench.cc  Contended add (metrics_counter_bench, not built by default).
+test/seeded.cc    Both atomic counters at 64 bits from starting words around 2^63 and 2^64, against a 128-bit oracle.
+tools/mutants.py  Breaks metrics.hh in fifteen ways and requires a test to fail on each.
+bench/bench.cc    Update cost of each counter and histogram (metrics_bench; METRICS_BUILD_BENCH=ON).
+bench/counter_bench.cc  Contended add (metrics_counter_bench; METRICS_BUILD_BENCH=ON).
 CHANGELOG.md      Dated changes.
 docs/metrics.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/metrics.d2 docs/metrics.svg
 ```
@@ -54,6 +56,7 @@ docs/metrics.d2     README diagram; render: d2 --layout elk --sketch --theme 302
 cmake -S . -B build && cmake --build build && ctest --test-dir build
 ```
 
-After changing a counter, also break it once (for example, drop the `small_`
-check in `ContendedCounter::add`, or put a `fetch_add` fast path back in
-`AtomicCounter::add`) and confirm `metrics_model` and `metrics_differential` fail.
+After changing a counter, run `python3 tools/mutants.py`: it breaks `metrics.hh` in a scratch copy (the `small_`
+check dropped from `ContendedCounter::add`, a `fetch_add` fast path put back in `AtomicCounter::add`, a clamp
+removed, a bucket bound moved) and requires a test to fail on each. It exits non-zero when a mutant survives,
+stops compiling or no longer matches its text. Add a mutant with each new rule.
