@@ -7,148 +7,141 @@ Part of [Kronuz C++ Libraries](https://github.com/Kronuz/cpp-libraries), a colle
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)
 
-Bounded counters and duration histograms for C++20, header-only, with no dependencies.
-Counters saturate instead of wrapping, and nothing allocates.
-
-![metrics: durations land in 15 buckets from 1 µs to 64 s, growing 4x](docs/metrics.svg)
+Header-only saturating counters and duration histograms for C++20: no allocation, and exact sums under contention.
+Counters stop at 2^64 - 1 instead of wrapping, and a histogram files a
+nanosecond duration into one of 15 buckets with a branchless count over 14
+constant bounds. Reach for it for hot-path counters and latency histograms that
+your server snapshots and exports itself.
 
 ## ✨ Highlights
 
-- `kronuz::metrics::Counter`: a single-owner `std::uint64_t` counter. `add(n)` saturates at
-  the maximum instead of wrapping; `observe_max(v)` keeps the largest value seen.
-- `kronuz::metrics::AtomicCounter`: the same with relaxed atomics, for counters several
-  threads update. Every update is one compare-exchange on one word, so `add` and
-  `observe_max` are each atomic and can be mixed.
-- `kronuz::metrics::ContendedCounter`: for counters many threads `add` to. Two words (16
-  bytes): amounts below 2^32 take one `fetch_add`, so an add never retries. The value is
-  exactly as saturating as `AtomicCounter`'s.
-- `kronuz::metrics::DurationHistogram<Counter>`: nanosecond durations in 15 buckets with
-  inclusive bounds from 1 µs to 64 s, growing by 4× (the last bucket holds everything
-  above 64 s), plus the count, the saturating sum, and the maximum.
-  `AtomicDurationHistogram` uses `AtomicCounter` and `ContendedDurationHistogram` uses
-  `ContendedCounter`. `snapshot()` copies the state out as a plain `DurationSnapshot`.
-
-Nothing allocates, and an update is a few instructions: the bucket index is a branchless count
-over 14 constant bounds.
-
-## 📦 Installation
-
-Requires a C++20 compiler; CMake 3.14 or newer for the CMake route. CI builds it on
-Linux (x86_64, arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan
-builds.
-
-```cmake
-include(FetchContent)
-FetchContent_Declare(metrics
-  GIT_REPOSITORY https://github.com/Kronuz/metrics.git
-  GIT_TAG        main)
-FetchContent_MakeAvailable(metrics)
-
-target_link_libraries(my_app PRIVATE metrics::metrics)
-```
+- **Saturating, never wrapping.** `Counter::add(n)` stops at 2^64 - 1, and
+  `observe_max(v)` keeps the largest value seen.
+- **Atomic when shared.** `AtomicCounter` updates one word with a
+  compare-exchange, so `add` and `observe_max` can be mixed across threads.
+- **Built for contention.** `ContendedCounter` takes adds below 2^32 with one
+  `fetch_add` that never retries, in 16 bytes, and stays exactly as saturating
+  as `AtomicCounter`.
+- **Duration histograms.** `DurationHistogram<>` files nanoseconds into 15
+  buckets from 1 µs to 64 s (1, 4, 16, 64 and 256 of each unit, plus one for
+  the rest) and keeps the count, the saturating sum and the maximum;
+  `AtomicDurationHistogram` and `ContendedDurationHistogram` share it across
+  threads.
+- **Plain snapshots.** `snapshot()` copies the state into a `DurationSnapshot`
+  struct.
+- **Checked against a model.** `test/model.cc` explores every interleaving of
+  two to five threads at 8 bits, and `tools/mutants.py` requires a test to fail
+  on each of fifteen broken variants.
 
 ## 🚀 Quick start
 
 ```cpp
 #include "metrics.hh"
 
-kronuz::metrics::DurationHistogram<> latency;
-latency.observe(12'000);                 // 12 µs
-auto s = latency.snapshot();             // s.buckets, s.count, s.sum_ns, s.maximum_ns
+#include <cstdint>
+#include <iostream>
+
+int main() {
+	kronuz::metrics::DurationHistogram<> latency;
+	latency.observe(12'000);       // 12 µs, in the bucket up to 16 µs
+	latency.observe(3'000'000);    // 3 ms, in the bucket up to 4 ms
+
+	auto s = latency.snapshot();
+	std::cout << s.count << ' ' << s.sum_ns << ' ' << s.maximum_ns << ' '
+	          << s.buckets[2] << ' ' << s.buckets[6] << '\n';   // 2 3012000 3000000 1 1
+
+	kronuz::metrics::Counter requests;
+	requests.add(UINT64_MAX);
+	requests.add();                // saturates instead of wrapping
+	std::cout << (requests.get() == UINT64_MAX) << '\n';        // 1
+}
 ```
 
-## 🛠️ Building and testing
+## 📦 Installation
 
-```sh
-cmake -S . -B build && cmake --build build && ctest --test-dir build
+Requires a C++20 compiler and CMake 3.16 or newer; no dependencies. CI builds it
+on Linux (x86_64, arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan,
+and TSan builds.
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(metrics
+  GIT_REPOSITORY https://github.com/Kronuz/metrics.git
+  GIT_TAG        41a72134892eef4f1eecf20f149dc0b84cea9650)  # or main for the tip
+FetchContent_MakeAvailable(metrics)
+
+target_link_libraries(my_app PRIVATE metrics::metrics)
+```
+
+```cpp
+#include "metrics.hh"
 ```
 
 ## 🎯 When to use it
 
-- ✅ Hot-path counters and latency histograms with fixed memory.
-- ❌ Exporting: snapshots are plain structs; formatting for Prometheus or similar is yours.
+Use it for hot-path counters and latency histograms with fixed memory, updated
+by one thread or many.
 
-## ⚡ Contended counters
+Not for:
 
-Under contention the compare-exchange loop of `AtomicCounter` retries, and the retries cost
-more than the add. A `fetch_add` never retries, but a bare `fetch_add` cannot saturate: if it
-runs after another thread has lifted the same word to `UINT64_MAX`, the sum wraps. So no
-`fetch_add` is added to a single word.
+- **Exporting.** Snapshots are plain structs; formatting for Prometheus or
+  similar is yours.
+- **Mixing `add` and `observe_max` on a `ContendedCounter`.** Its
+  `observe_max` maximizes only one of its two words; use one or the other.
+- **A `ContendedCounter` without contention.** It is twice the size of an
+  `AtomicCounter` and slower at two threads on arm64 (see below).
+- **Percentiles finer than a bucket.** The bounds are fixed, a factor of about
+  4 apart.
 
-`ContendedCounter` splits the value over two words and returns their saturating sum:
+## ⚡ Performance
 
-- `small_` takes every add below 2^32 with one `fetch_add`, but only after loading a value
-  below 2^63. Once it first reaches 2^63 each thread adds to it at most once more, so with
-  `n` adds in flight it stays below 2^64 while `n <= 2^31`.
-- `large_` takes every other add, and `observe_max`, with a clamping compare-exchange.
-
-Each word only grows and neither wraps, so the value is exactly the saturating sum, a
-reader never sees it decrease, and once it reads `UINT64_MAX` it reads `UINT64_MAX` forever.
-
-It is 16 bytes and costs more than `AtomicCounter` where there is no contention to remove (two
-threads on arm64; see Performance). Use it with `add` or with `observe_max`, not both:
-`observe_max` maximizes `large_` only.
-
-Both counters are templates on the word and the atomic (`BasicAtomicCounter<Word, Atomic>`,
-`BasicContendedCounter<Word, Atomic>`); `AtomicCounter` and `ContendedCounter` are the 64-bit
-`std::atomic` instances.
-
-The histogram bucket index is the count of bounds below the value, a branchless loop.
-
-## ✅ Verification
-
-`test/model.cc` runs the counter code itself, at 8 bits, against a model atomic in which every
-load, store, `fetch_add` and compare-exchange is one step. It explores every interleaving of two
-to four threads of adds, `observe_max` and `get()` from initial states around the thresholds, and
-checks that the value never decreases, that it stays between the saturated totals of the finished
-and the started operations, that each `get()` returns a value from between its first and last
-step, and that the final value is exact. It includes several adds per thread from nonzero
-states and every interleaving of four and five threads adding 15 at `small_` = 127, and of five adding
-31, below the eight-thread bound, besides the schedule that crosses the bound. It also rejects seven broken
-counters, among them a single-word `fetch_add` fast path. `test/differential.cc` checks both counters at 64 and 16 bits
-against a frozen compare-exchange counter, including small adds racing a large one with a
-reader, and runs under ThreadSanitizer. `test/seeded.cc` builds both counters at 64 bits over an
-atomic that records its words, stores starting values just below, at and above 2^63 and near 2^64
-into them, and checks every add and every concurrent run against a 128-bit oracle: the 64-bit
-`small_` check cannot be reached by real adds. `tools/mutants.py` breaks `metrics.hh` in fifteen
-ways (the single-word `fetch_add`, the `small_` check, the clamps, the bucket bounds) and requires a
-test to fail on each.
-
-## 📊 Performance
-
-ns per `add(1)` per thread, every thread adding to one counter, best of 5, two runs each
-(`metrics_counter_bench`, `-O3`, a quiet host):
+ns per `add(1)` per thread, every thread adding to one counter
+(`metrics_counter_bench`, `-O3`), best of 5, the range over two runs:
 
 | | 1 thread | 2 threads | 4 threads | 8 threads |
 |---|---|---|---|---|
-| `AtomicCounter`, Apple M4 Pro | 2.1, 2.1 | 5.3, 5.2 | 68.7, 67.9 | 342, 337 |
-| `ContendedCounter`, Apple M4 Pro | 1.9, 1.9 | 6.8, 7.1 | 42.7, 34.1 | 200, 194 |
-| `AtomicCounter`, Intel i9-9980HK | 7.8, 8.2 | 76.4, 67.1 | 230, 214 | 626, 530 |
-| `ContendedCounter`, Intel i9-9980HK | 7.5, 7.8 | 50.1, 43.1 | 89.0, 88.3 | 192, 180 |
+| `AtomicCounter`, Apple M4 Pro | 2.1 | 5.2 to 5.3 | 67.9 to 68.7 | 337 to 342 |
+| `ContendedCounter`, Apple M4 Pro | 1.9 | 6.8 to 7.1 | 34.1 to 42.7 | 194 to 200 |
+| `AtomicCounter`, Intel Core i9-9980HK | 7.8 to 8.2 | 67.1 to 76.4 | 214 to 230 | 530 to 626 |
+| `ContendedCounter`, Intel Core i9-9980HK | 7.5 to 7.8 | 43.1 to 50.1 | 88.3 to 89.0 | 180 to 192 |
 
-A bare `fetch_add` with no saturation costs 7.0 ns at two threads and 190 ns at eight on the M4
-Pro, and 28 and 140 ns on the i9. The `add(1)` fast path of `ContendedCounter` is a load, a test
-and the `fetch_add`.
-
-`observe` on a histogram, one thread, ns per observation (`metrics_bench`): the owner
-`DurationHistogram<>` takes 2.4-2.7 ns on the M4 Pro and 6.0-6.8 ns on the i9;
-`AtomicDurationHistogram` 2.9-3.2 and 17.8-18.9; `ContendedDurationHistogram` 2.8-3.1 and
-17.3-18.1 (288 bytes instead of 144).
+A bare `fetch_add` with no saturation costs 7.0 ns at two threads and 190 ns at
+eight on the M4 Pro, and 28 and 140 ns on the i9. One `observe` on a histogram,
+one thread (`metrics_bench`): `DurationHistogram<>` takes 2.4 to 2.7 ns on the
+M4 Pro and 6.0 to 6.8 ns on the i9, `AtomicDurationHistogram` 2.9 to 3.2 and
+17.8 to 18.9, and `ContendedDurationHistogram` 2.8 to 3.1 and 17.3 to 18.1
+(288 bytes instead of 144).
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMETRICS_BUILD_BENCH=ON && cmake --build build
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DMETRICS_BUILD_BENCH=ON
+cmake --build build
 ./build/metrics_counter_bench && ./build/metrics_bench
 ```
 
 ## 📚 Documentation
 
-- [AGENTS.md](AGENTS.md): repository map and invariants.
+- [ARCHITECTURE.md](ARCHITECTURE.md): the counters, why the contended counter
+  splits its value over two words, the histogram, and how they are verified.
 - [CHANGELOG.md](CHANGELOG.md): what changed.
+- [AGENTS.md](AGENTS.md): repository map and invariants.
+- [Kronuz C++ Libraries](https://github.com/Kronuz/cpp-libraries/blob/main/AGENTS.md#metrics): the catalog entry.
+
+## 🛠️ Building and testing
+
+```sh
+cmake -B build
+cmake --build build
+ctest --test-dir build
+```
+
+Add `-DMETRICS_BUILD_BENCH=ON` to build `metrics_bench` and
+`metrics_counter_bench`. `python3 tools/mutants.py` runs the mutation check.
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first. CI must
-pass on every platform.
+Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) and the
+catalog's [rules of engagement](https://github.com/Kronuz/cpp-libraries/blob/main/AGENTS.md#rules-of-engagement)
+first; CI must pass on every platform.
 
 ## 📄 License
 

@@ -14,7 +14,7 @@ tools/mutants.py  Breaks metrics.hh in fifteen ways and requires a test to fail 
 bench/bench.cc    Update cost of each counter and histogram (metrics_bench; METRICS_BUILD_BENCH=ON).
 bench/counter_bench.cc  Contended add (metrics_counter_bench; METRICS_BUILD_BENCH=ON).
 CHANGELOG.md      Dated changes.
-docs/metrics.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/metrics.d2 docs/metrics.svg
+ARCHITECTURE.md   The counters, the two-word contended counter, the histogram, and how they are verified.
 ```
 
 ## Invariants
