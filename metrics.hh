@@ -40,32 +40,65 @@ class Counter {
 	static constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
 	std::uint64_t value_ = 0;
 };
-class AtomicCounter {
+// Saturating atomic counters, templated on the word and the atomic so test/model.cc can run the
+// code at 8 bits against a model atomic. Use the AtomicCounter and ContendedCounter aliases.
+//
+// BasicAtomicCounter: one word updated by compare-and-swap, so add and observe_max are each atomic,
+// the value never wraps, and a reader never sees it decrease. A fetch_add on this word could wrap.
+template <class Word, template <class> class Atomic> class BasicAtomicCounter {
   public:
-	// Saturating add that never wraps: fetch_add below 2^63 for amounts below
-	// 2^32, a clamping CAS loop otherwise. Don't mix with observe_max; see AGENTS.md.
-	void add(std::uint64_t amount = 1) noexcept {
-		constexpr std::uint64_t fast_value = std::uint64_t(1) << 63, fast_amount = std::uint64_t(1) << 32;
+	void add(Word amount = 1) noexcept {
 		auto current = value_.load(std::memory_order_relaxed);
-		if (current < fast_value && amount < fast_amount) [[likely]] {
-			value_.fetch_add(amount, std::memory_order_relaxed);
-			return;
-		}
-		while (!value_.compare_exchange_weak(current, amount > maximum - current ? maximum : current + amount,
+		while (!value_.compare_exchange_weak(current, Word(current + std::min(amount, Word(maximum - current))),
 		                                     std::memory_order_relaxed)) {
 		}
 	}
-	void observe_max(std::uint64_t value) noexcept {
+	void observe_max(Word value) noexcept {
 		auto current = value_.load(std::memory_order_relaxed);
 		while (current < value && !value_.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
 		}
 	}
-	std::uint64_t get() const noexcept { return value_.load(std::memory_order_relaxed); }
+	Word get() const noexcept { return value_.load(std::memory_order_relaxed); }
 
   private:
-	static constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
-	std::atomic<std::uint64_t> value_{0};
+	static constexpr Word maximum = std::numeric_limits<Word>::max();
+	Atomic<Word> value_{0};
 };
+// BasicContendedCounter: the value is the saturating sum of two words. `small_` takes amounts
+// below 2^(bits/2) with one fetch_add, after a load below 2^(bits-1); with n adds in flight it
+// stays under 2^bits while n <= 2^(bits/2 - 1), so it cannot wrap. Every other add, and
+// observe_max, is a compare-and-swap on `large_`. Both words only grow, so the sum is exact and a
+// reader never sees it decrease. Use add or observe_max on a counter, not both.
+template <class Word, template <class> class Atomic> class BasicContendedCounter {
+  public:
+	void add(Word amount = 1) noexcept {
+		if (amount < fast_amount && small_.load(std::memory_order_relaxed) < fast_total) [[likely]] {
+			small_.fetch_add(amount, std::memory_order_relaxed);
+			return;
+		}
+		auto current = large_.load(std::memory_order_relaxed);
+		while (!large_.compare_exchange_weak(current, Word(current + std::min(amount, Word(maximum - current))),
+		                                     std::memory_order_relaxed)) {
+		}
+	}
+	void observe_max(Word value) noexcept {
+		auto current = large_.load(std::memory_order_relaxed);
+		while (current < value && !large_.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+		}
+	}
+	Word get() const noexcept {
+		Word small = small_.load(std::memory_order_relaxed), large = large_.load(std::memory_order_relaxed);
+		return large > Word(maximum - small) ? maximum : Word(small + large);
+	}
+
+  private:
+	static constexpr unsigned bits = std::numeric_limits<Word>::digits;
+	static constexpr Word maximum = std::numeric_limits<Word>::max();
+	static constexpr Word fast_total = Word(Word(1) << (bits - 1)), fast_amount = Word(Word(1) << (bits / 2));
+	Atomic<Word> small_{0}, large_{0};
+};
+using AtomicCounter = BasicAtomicCounter<std::uint64_t, std::atomic>;
+using ContendedCounter = BasicContendedCounter<std::uint64_t, std::atomic>;
 
 // Inclusive nanosecond bounds; the final bucket is the overflow bucket.
 inline constexpr std::array<std::uint64_t, 14> duration_bounds_ns{
@@ -105,5 +138,6 @@ template <class CounterType = Counter> class DurationHistogram {
 	CounterType count_, sum_, maximum_;
 };
 using AtomicDurationHistogram = DurationHistogram<AtomicCounter>;
+using ContendedDurationHistogram = DurationHistogram<ContendedCounter>;
 
 } // namespace kronuz::metrics

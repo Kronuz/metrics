@@ -18,7 +18,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_executable(metrics_differential test/differential.cc)
   target_link_libraries(metrics_differential PRIVATE metrics Threads::Threads)
   add_test(NAME metrics_differential COMMAND metrics_differential)
-  set_tests_properties(metrics_differential PROPERTIES TIMEOUT 60)
+  set_tests_properties(metrics_differential PROPERTIES TIMEOUT 300)
+
+  # Exhaustive interleaving model of the atomic counters at 8 bits (single-threaded).
+  add_executable(metrics_model test/model.cc)
+  target_link_libraries(metrics_model PRIVATE metrics)
+  add_test(NAME metrics_model COMMAND metrics_model)
+  set_tests_properties(metrics_model PROPERTIES TIMEOUT 300)
 
   # Contended counter benchmark (not built by default): cmake --build build --target metrics_counter_bench
   add_executable(metrics_counter_bench EXCLUDE_FROM_ALL bench/counter_bench.cc)

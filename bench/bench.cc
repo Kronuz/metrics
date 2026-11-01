@@ -73,6 +73,7 @@ int main() {
 			run<kronuz::metrics::DurationHistogram<>>("disabled", false, false);
 			run<kronuz::metrics::DurationHistogram<>>("owner", true, false);
 			run<kronuz::metrics::AtomicDurationHistogram>("atomic", true, false);
+			run<kronuz::metrics::ContendedDurationHistogram>("contended", true, false);
 			run<kronuz::metrics::DurationHistogram<>>("owner_with_two_clocks", true, true);
 		}
 	} catch (const std::exception &error) {

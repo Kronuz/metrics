@@ -1,5 +1,8 @@
-// Differential tests against frozen copies of the original implementation: the
-// CAS-loop saturating AtomicCounter and the std::lower_bound bucket search.
+// Differential and race tests of the atomic counters against frozen copies of the original
+// implementation: the compare-exchange saturating counter and the std::lower_bound bucket search.
+// Every counter test runs on AtomicCounter and ContendedCounter at 64 bits and at 16 bits, so the
+// thresholds of ContendedCounter (2^15 and 2^8 at 16 bits) are crossed by ordinary amounts.
+// test/model.cc checks the same counters over every interleaving at 8 bits.
 #include "metrics.hh"
 
 #include <algorithm>
@@ -21,18 +24,20 @@ using namespace kronuz::metrics;
 		}                                                                        \
 	} while (0)
 
-constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
-
-class FrozenAtomicCounter {
+// The original AtomicCounter (a compare-exchange loop on one word), on any word.
+template <class W> class FrozenAtomicCounter {
   public:
-	void add(std::uint64_t amount = 1) noexcept {
+	void add(W amount = 1) noexcept {
 		auto value = value_.load(std::memory_order_relaxed);
-		while (!value_.compare_exchange_weak(value, value + std::min(amount, kMax - value), std::memory_order_relaxed)) {
+		while (!value_.compare_exchange_weak(value, W(value + std::min(amount, W(kMax - value))),
+		                                     std::memory_order_relaxed)) {
 		}
 	}
-	std::uint64_t get() const noexcept { return value_.load(std::memory_order_relaxed); }
+	W get() const noexcept { return value_.load(std::memory_order_relaxed); }
+
   private:
-	std::atomic<std::uint64_t> value_{0};
+	static constexpr W kMax = std::numeric_limits<W>::max();
+	std::atomic<W> value_{0};
 };
 
 static std::size_t frozen_bucket(std::uint64_t ns) {
@@ -40,84 +45,257 @@ static std::size_t frozen_bucket(std::uint64_t ns) {
 									duration_bounds_ns.begin());
 }
 
-int main() {
+template <class W> constexpr W word_max = std::numeric_limits<W>::max();
+
+// Sanitizer builds run the concurrent tests at an eighth of the effort.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr int effort = 1;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+constexpr int effort = 1;
+#else
+constexpr int effort = 8;
+#endif
+#else
+constexpr int effort = 8;
+#endif
+
+template <class W> W random_amount(std::mt19937_64 &rng) {
+	switch (rng() % 6) {
+		case 0: return 1;
+		case 1: return W(rng() % 1000);
+		case 2: return W(rng());
+		case 3: return W(word_max<W> - rng() % 4);
+		case 4: return W(rng() % 16);
+		default: return W(rng() >> (rng() % 64));
+	}
+}
+
+// Sequential behavior equals the frozen counter after every add, including ones that saturate.
+template <class C, class W> void sequences() {
 	std::mt19937_64 rng(7);
-	// Counter: random sequences of adds, from tiny to near-overflow, on both.
 	for (int round = 0; round < 2000; ++round) {
-		AtomicCounter a;
-		FrozenAtomicCounter b;
+		C a;
+		FrozenAtomicCounter<W> b;
 		for (int i = 0, n = 1 + int(rng() % 40); i < n; ++i) {
-			std::uint64_t amount;
-			switch (rng() % 5) {
-				case 0: amount = 1; break;
-				case 1: amount = rng() % 1000; break;
-				case 2: amount = rng(); break;
-				case 3: amount = kMax - rng() % 4; break;
-				default: amount = rng() >> (rng() % 64); break;
-			}
+			auto amount = random_amount<W>(rng);
 			a.add(amount);
 			b.add(amount);
 			CHECK(a.get() == b.get());
 		}
 	}
-	{
-		AtomicCounter c;
-		c.add(kMax); CHECK(c.get() == kMax);
-		c.add(); CHECK(c.get() == kMax);
-		c.add(0); CHECK(c.get() == kMax);
-		AtomicCounter z; z.add(0); CHECK(z.get() == 0);
-		AtomicCounter d; d.add(kMax - 1); d.add(1); CHECK(d.get() == kMax); d.add(kMax); CHECK(d.get() == kMax);
+	// Many small amounts carry a narrow word across the fast-path thresholds, then saturate it.
+	for (int round = 0; round < 20 && std::numeric_limits<W>::digits < 64; ++round) {
+		C a;
+		FrozenAtomicCounter<W> b;
+		for (int i = 0; i < 300000 && b.get() != word_max<W>; ++i) {
+			auto amount = W(rng() % 300);
+			a.add(amount);
+			b.add(amount);
+			CHECK(a.get() == b.get());
+		}
+		CHECK(b.get() == word_max<W>);
+		// Adds after saturation must leave the value pinned.
+		for (int i = 0; i < 2000; ++i) {
+			auto amount = W(rng() % 300);
+			a.add(amount);
+			b.add(amount);
+			CHECK(a.get() == word_max<W>);
+		}
 	}
-
-	// Bucket search: every edge, its neighbours and random values against lower_bound.
-	std::vector<std::uint64_t> values{0, 1, kMax, kMax - 1};
-	for (auto edge : duration_bounds_ns) for (int d = -2; d <= 2; ++d) values.push_back(edge + d);
-	for (int i = 0; i < 200000; ++i) values.push_back(rng() >> (rng() % 64));
-	for (auto v : values) {
-		DurationHistogram<> h;
-		h.observe(v);
-		auto s = h.snapshot();
-		CHECK(s.buckets[frozen_bucket(v)] == 1 && s.count == 1 && s.sum_ns == v && s.maximum_ns == v);
+	C c;
+	c.add(word_max<W>);
+	CHECK(c.get() == word_max<W>);
+	c.add();
+	CHECK(c.get() == word_max<W>);
+	c.add(0);
+	CHECK(c.get() == word_max<W>);
+	C z;
+	z.add(0);
+	CHECK(z.get() == 0);
+	C d;
+	d.add(word_max<W> - 1);
+	d.add(1);
+	CHECK(d.get() == word_max<W>);
+	d.add(word_max<W>);
+	CHECK(d.get() == word_max<W>);
+	// observe_max alone keeps the largest value.
+	C m;
+	W largest = 0;
+	for (int i = 0; i < 100; ++i) {
+		auto v = random_amount<W>(rng);
+		m.observe_max(v);
+		largest = std::max(largest, v);
+		CHECK(m.get() == largest);
 	}
+}
 
-	// Concurrent: exact totals when nothing saturates, pinned at the maximum when it does.
-	for (int round = 0; round < 50; ++round) {
-		AtomicCounter exact, sat;
+// Exact totals when nothing saturates, pinned at the maximum when it does.
+template <class C, class W> void concurrent_totals() {
+	constexpr bool wide = std::numeric_limits<W>::digits == 64;
+	const int per_thread = wide ? 20000 : 1500;
+	for (int round = 0; round < 2 * effort; ++round) {
+		C exact, sat;
 		std::vector<std::thread> ts;
-		for (int t = 0; t < 8; ++t) ts.emplace_back([&, t] {
-			for (int i = 0; i < 20000; ++i) { exact.add(t + 1); sat.add(kMax / 4); }
-		});
-		for (auto& t : ts) t.join();
-		CHECK(exact.get() == 20000ull * 36);
-		CHECK(sat.get() == kMax);
+		for (int t = 0; t < 8; ++t) {
+			ts.emplace_back([&, t] {
+				for (int i = 0; i < per_thread; ++i) {
+					exact.add(W(t + 1));
+					sat.add(W(word_max<W> / 4));
+				}
+			});
+		}
+		for (auto &t : ts) {
+			t.join();
+		}
+		CHECK(exact.get() == W(per_thread * 36ull));
+		CHECK(sat.get() == word_max<W>);
 	}
-	// Saturation visibility: once pinned, concurrent adds never expose a smaller value.
-	for (std::uint64_t pin : {kMax, kMax - 3}) {
-		AtomicCounter c;
+}
+
+// Once pinned, concurrent adds never expose a smaller value.
+template <class C, class W> void pinned_never_dips() {
+	for (W pin : {word_max<W>, W(word_max<W> - 3)}) {
+		C c;
 		c.add(pin);
 		c.add(10);
-		CHECK(c.get() == kMax);
+		CHECK(c.get() == word_max<W>);
 		std::atomic<bool> stop{false};
 		std::vector<std::thread> ws;
-		for (int i = 0; i < 4; ++i) ws.emplace_back([&] { while (!stop) { c.add(1); c.add(kMax); } });
+		for (int i = 0; i < 4; ++i) {
+			ws.emplace_back([&] {
+				while (!stop) {
+					c.add(1);
+					c.add(word_max<W>);
+				}
+			});
+		}
 		long low = 0;
-		for (int i = 0; i < 2000000; ++i) low += c.get() != kMax;
+		for (int i = 0; i < 60000 * effort; ++i) {
+			low += c.get() != word_max<W>;
+		}
 		stop = true;
-		for (auto& t : ws) t.join();
-		CHECK(low == 0 && c.get() == kMax);
+		for (auto &t : ws) {
+			t.join();
+		}
+		CHECK(low == 0 && c.get() == word_max<W>);
 	}
-	// Saturating from below under contention, readers see a monotonic value.
-	{
-		AtomicCounter c;
+}
+
+// Saturating from below under contention: a reader sees a nondecreasing value.
+template <class C, class W> void monotonic_while_saturating() {
+	C c;
+	std::atomic<bool> stop{false};
+	std::vector<std::thread> ws;
+	for (int i = 0; i < 4; ++i) {
+		ws.emplace_back([&] {
+			while (!stop) {
+				c.add(W(word_max<W> / 3));
+			}
+		});
+	}
+	W prev = 0;
+	long regress = 0;
+	for (int i = 0; i < 60000 * effort; ++i) {
+		auto v = c.get();
+		regress += v < prev;
+		prev = v;
+	}
+	stop = true;
+	for (auto &t : ws) {
+		t.join();
+	}
+	CHECK(regress == 0 && c.get() == word_max<W>);
+}
+
+// A small add in flight while another thread's large add pins the counter (the race of review
+// finding CA2): the final value is the maximum and a reader never sees the value fall. With a
+// fetch_add that is allowed to wrap this fails on about every trial on arm and one in a hundred
+// on x86.
+template <class C, class W> void small_adds_racing_a_pin() {
+	constexpr int threads = 4;
+	const int trials = 250 * effort;
+	for (int t = 0; t < trials; ++t) {
+		C c;
+		std::atomic<int> go{0};
 		std::atomic<bool> stop{false};
-		std::vector<std::thread> ws;
-		for (int i = 0; i < 4; ++i) ws.emplace_back([&] { while (!stop) c.add(kMax / 3); });
-		std::uint64_t prev = 0;
+		std::vector<std::thread> ts;
+		for (int i = 0; i < threads; ++i) {
+			ts.emplace_back([&] {
+				while (!go.load(std::memory_order_acquire)) {
+				}
+				for (int k = 0; k < 200; ++k) {
+					c.add(1);
+				}
+			});
+		}
+		std::thread big([&] {
+			while (!go.load(std::memory_order_acquire)) {
+			}
+			for (int k = 0; k < (t % 50); ++k) {
+				std::atomic_signal_fence(std::memory_order_seq_cst);
+			}
+			c.add(word_max<W>);
+		});
 		long regress = 0;
-		for (int i = 0; i < 2000000; ++i) { auto v = c.get(); regress += v < prev; prev = v; }
+		std::thread reader([&] {
+			W prev = 0;
+			while (!stop.load(std::memory_order_relaxed)) {
+				auto v = c.get();
+				regress += v < prev;
+				prev = v;
+			}
+		});
+		go.store(1, std::memory_order_release);
+		for (auto &th : ts) {
+			th.join();
+		}
+		big.join();
 		stop = true;
-		for (auto& t : ws) t.join();
-		CHECK(regress == 0 && c.get() == kMax);
+		reader.join();
+		CHECK(c.get() == word_max<W>);
+		CHECK(regress == 0);
+	}
+}
+
+template <class C, class W> void run_counter(const char *name) {
+	sequences<C, W>();
+	concurrent_totals<C, W>();
+	pinned_never_dips<C, W>();
+	monotonic_while_saturating<C, W>();
+	small_adds_racing_a_pin<C, W>();
+	std::printf("%s ok\n", name);
+}
+
+int main() {
+	static_assert(sizeof(AtomicCounter) == 8 && sizeof(Counter) == 8);
+	run_counter<AtomicCounter, std::uint64_t>("AtomicCounter (64 bits)");
+	run_counter<ContendedCounter, std::uint64_t>("ContendedCounter (64 bits)");
+	run_counter<BasicAtomicCounter<std::uint16_t, std::atomic>, std::uint16_t>("AtomicCounter (16 bits)");
+	run_counter<BasicContendedCounter<std::uint16_t, std::atomic>, std::uint16_t>("ContendedCounter (16 bits)");
+
+	// Bucket search: every edge, its neighbours and random values against lower_bound; both counter types.
+	std::mt19937_64 rng(11);
+	std::vector<std::uint64_t> values{0, 1, std::numeric_limits<std::uint64_t>::max(),
+	                                  std::numeric_limits<std::uint64_t>::max() - 1};
+	for (auto edge : duration_bounds_ns) {
+		for (int d = -2; d <= 2; ++d) {
+			values.push_back(edge + d);
+		}
+	}
+	for (int i = 0; i < 200000; ++i) {
+		values.push_back(rng() >> (rng() % 64));
+	}
+	for (auto v : values) {
+		DurationHistogram<> h;
+		AtomicDurationHistogram a;
+		ContendedDurationHistogram c;
+		h.observe(v);
+		a.observe(v);
+		c.observe(v);
+		for (auto s : {h.snapshot(), a.snapshot(), c.snapshot()}) {
+			CHECK(s.buckets[frozen_bucket(v)] == 1 && s.count == 1 && s.sum_ns == v && s.maximum_ns == v);
+		}
 	}
 	std::puts("metrics differential tests passed");
 }

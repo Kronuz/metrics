@@ -1,5 +1,5 @@
-// Contended AtomicCounter::add against the original CAS-loop saturating add and a
-// bare fetch_add (comparator, no saturation). ns per add per thread, best of 5.
+// Contended AtomicCounter and ContendedCounter add against the original CAS-loop saturating
+// add and a bare fetch_add (comparator, no saturation). ns per add per thread, best of 5.
 #include "metrics.hh"
 
 #include <algorithm>
@@ -48,6 +48,7 @@ static double run(int threads) {
 
 int main() {
 	for (int t : {1, 2, 4, 8})
-		std::printf("threads=%d  CAS loop %6.1f   AtomicCounter %6.1f   bare fetch_add %6.1f  ns/add\n", t,
-		            run<CasCounter>(t), run<kronuz::metrics::AtomicCounter>(t), run<FetchAddCounter>(t));
+		std::printf("threads=%d  CAS loop %6.1f   AtomicCounter %6.1f   ContendedCounter %6.1f   bare fetch_add %6.1f  ns/add\n",
+		            t, run<CasCounter>(t), run<kronuz::metrics::AtomicCounter>(t),
+		            run<kronuz::metrics::ContendedCounter>(t), run<FetchAddCounter>(t));
 }
