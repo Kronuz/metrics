@@ -20,8 +20,9 @@
  * THE SOFTWARE.
  */
 
-// One duration observation on a histogram, one thread: ns per observe(), net of the loop that
-// draws the values (the "disabled" row is that loop alone), best of five runs.
+// One duration observation on a histogram, one thread: ns per observe(), best of five runs of
+// 1,048,576 observations (16 passes over 65,536 values drawn beforehand, so the loop only reads a value
+// and observes it).
 //
 // The comparators are the histograms one writes by hand for the same buckets: a binary search
 // over the 14 bounds (std::lower_bound) and plain increments, and the same with relaxed
@@ -96,40 +97,33 @@ class HandWrittenAtomicHistogram {
 	std::atomic<std::uint64_t> count_{0}, sum_{0}, maximum_{0};
 };
 
-constexpr std::uint64_t iterations = 1000000;
+constexpr std::size_t passes = 16;
 
-struct Result {
-	double seconds;
-	DurationSnapshot snapshot;
-};
-
-// The run draws the values with xorshift64; with `observe` false it draws and discards them.
-template <class Histogram> Result run(bool observe) {
-	Histogram histogram;
-	std::uint64_t random = 12345, checksum = 0;
-	auto start = Clock::now();
-	for (std::uint64_t i = 0; i < iterations; ++i) {
+std::vector<std::uint64_t> draw() {
+	std::vector<std::uint64_t> values(65536);
+	std::uint64_t random = 12345;
+	for (auto& value : values) {
 		random ^= random << 13;
 		random ^= random >> 7;
 		random ^= random << 17;
-		auto value = random % 100000000;
-		checksum += value;
-		if (observe) {
-			histogram.observe(value);
-		}
+		value = random % 100000000;
 	}
-	auto wall = std::chrono::duration<double>(Clock::now() - start).count();
-	volatile std::uint64_t keep = checksum;
-	(void)keep;
-	return {wall, histogram.snapshot()};
+	return values;
 }
 
-template <class Histogram> double best(bool observe, DurationSnapshot& snapshot) {
+// Seconds for the fastest of five runs on a fresh histogram; the snapshot is the last run's.
+template <class Histogram> double best(const std::vector<std::uint64_t>& values, DurationSnapshot& snapshot) {
 	double seconds = 1e18;
 	for (int repetition = 0; repetition < 5; ++repetition) {
-		auto result = run<Histogram>(observe);
-		seconds = std::min(seconds, result.seconds);
-		snapshot = result.snapshot;
+		Histogram histogram;
+		auto start = Clock::now();
+		for (std::size_t pass = 0; pass < passes; ++pass) {
+			for (auto value : values) {
+				histogram.observe(value);
+			}
+		}
+		seconds = std::min(seconds, std::chrono::duration<double>(Clock::now() - start).count());
+		snapshot = histogram.snapshot();
 	}
 	return seconds;
 }
@@ -141,30 +135,30 @@ bool same(const DurationSnapshot& a, const DurationSnapshot& b) {
 
 int main() {
 	try {
-		DurationSnapshot owner, snapshot, ignored;
-		double loop = best<kronuz::metrics::DurationHistogram<>>(false, ignored);
-		double owner_seconds = best<kronuz::metrics::DurationHistogram<>>(true, owner);
-		if (owner.count != iterations) {
+		const auto values = draw();
+		const double observations = double(values.size() * passes);
+		DurationSnapshot owner, snapshot;
+		double owner_seconds = best<kronuz::metrics::DurationHistogram<>>(values, owner);
+		if (owner.count != values.size() * passes) {
 			throw std::runtime_error("owner histogram count mismatch");
 		}
-		std::printf("%-40s %6s %s\n", "histogram", "bytes", "ns per observe (net of the loop)");
+		std::printf("%-40s %6s %s\n", "histogram", "bytes", "ns per observe");
 		auto row = [&](const char* name, std::size_t bytes, double seconds, const DurationSnapshot& result) {
-			std::printf("%-40s %6zu %6.2f%s\n", name, bytes, (seconds - loop) * 1e9 / iterations,
+			std::printf("%-40s %6zu %6.2f%s\n", name, bytes, seconds * 1e9 / observations,
 						same(result, owner) ? "" : "   MISMATCH");
 			if (!same(result, owner)) {
 				throw std::runtime_error("snapshot differs from the owner histogram");
 			}
 		};
 		row("DurationHistogram<>", sizeof(kronuz::metrics::DurationHistogram<>), owner_seconds, owner);
-		double seconds = best<HandWrittenHistogram>(true, snapshot);
+		double seconds = best<HandWrittenHistogram>(values, snapshot);
 		row("hand-written, lower_bound, plain", sizeof(HandWrittenHistogram), seconds, snapshot);
-		seconds = best<kronuz::metrics::AtomicDurationHistogram>(true, snapshot);
+		seconds = best<kronuz::metrics::AtomicDurationHistogram>(values, snapshot);
 		row("AtomicDurationHistogram", sizeof(kronuz::metrics::AtomicDurationHistogram), seconds, snapshot);
-		seconds = best<kronuz::metrics::ContendedDurationHistogram>(true, snapshot);
+		seconds = best<kronuz::metrics::ContendedDurationHistogram>(values, snapshot);
 		row("ContendedDurationHistogram", sizeof(kronuz::metrics::ContendedDurationHistogram), seconds, snapshot);
-		seconds = best<HandWrittenAtomicHistogram>(true, snapshot);
+		seconds = best<HandWrittenAtomicHistogram>(values, snapshot);
 		row("hand-written, lower_bound, atomic", sizeof(HandWrittenAtomicHistogram), seconds, snapshot);
-		std::printf("(the loop alone: %.2f ns per value)\n", loop * 1e9 / iterations);
 	} catch (const std::exception& error) {
 		std::fprintf(stderr, "%s\n", error.what());
 		return 1;
