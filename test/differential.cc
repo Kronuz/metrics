@@ -182,30 +182,38 @@ template <class C, class W> void pinned_never_dips() {
 	}
 }
 
-// Saturating from below under contention: a reader sees a nondecreasing value.
+// Saturating from below under contention: a reader sees a nondecreasing value. Each writer does a
+// fixed number of adds (enough to saturate) and the reader reads until all have finished, so the
+// result does not depend on how the threads are scheduled.
 template <class C, class W> void monotonic_while_saturating() {
-	C c;
-	std::atomic<bool> stop{false};
-	std::vector<std::thread> ws;
-	for (int i = 0; i < 4; ++i) {
-		ws.emplace_back([&] {
-			while (!stop) {
-				c.add(W(word_max<W> / 3));
-			}
-		});
+	for (int round = 0; round < 20 * effort; ++round) {
+		C c;
+		std::atomic<bool> go{false};
+		std::atomic<int> running{4};
+		std::vector<std::thread> ws;
+		for (int i = 0; i < 4; ++i) {
+			ws.emplace_back([&] {
+				while (!go.load(std::memory_order_acquire)) {
+				}
+				for (int k = 0; k < 2000; ++k) {
+					c.add(W(word_max<W> / 3));
+				}
+				running.fetch_sub(1);
+			});
+		}
+		go.store(true, std::memory_order_release);
+		W prev = 0;
+		long regress = 0;
+		while (running.load() > 0) {
+			auto v = c.get();
+			regress += v < prev;
+			prev = v;
+		}
+		for (auto &t : ws) {
+			t.join();
+		}
+		CHECK(regress == 0 && c.get() == word_max<W>);
 	}
-	W prev = 0;
-	long regress = 0;
-	for (int i = 0; i < 60000 * effort; ++i) {
-		auto v = c.get();
-		regress += v < prev;
-		prev = v;
-	}
-	stop = true;
-	for (auto &t : ws) {
-		t.join();
-	}
-	CHECK(regress == 0 && c.get() == word_max<W>);
 }
 
 // A small add in flight while another thread's large add pins the counter (the race of review

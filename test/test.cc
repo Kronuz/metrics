@@ -51,21 +51,26 @@ int main() {
 		histogram.observe(std::numeric_limits<std::uint64_t>::max());
 		histogram.observe(1);
 		require(histogram.snapshot().sum_ns == std::numeric_limits<std::uint64_t>::max());
-		AtomicDurationHistogram concurrent;
-		std::vector<std::thread> threads;
-		for (unsigned thread = 0; thread < 8; ++thread) {
-			threads.emplace_back([&] {
-				for (unsigned i = 0; i < 10000; ++i) {
-					concurrent.observe(1000);
-				}
-			});
-		}
-		for (auto &thread : threads) {
-			thread.join();
-		}
-		snapshot = concurrent.snapshot();
-		require(snapshot.count == 80000 && snapshot.sum_ns == 80000000 && snapshot.maximum_ns == 1000 &&
-				snapshot.buckets.front() == 80000);
+		auto observe_concurrently = [&](auto &concurrent) {
+			std::vector<std::thread> threads;
+			for (unsigned thread = 0; thread < 8; ++thread) {
+				threads.emplace_back([&] {
+					for (unsigned i = 0; i < 10000; ++i) {
+						concurrent.observe(1000);
+					}
+				});
+			}
+			for (auto &thread : threads) {
+				thread.join();
+			}
+			auto result = concurrent.snapshot();
+			require(result.count == 80000 && result.sum_ns == 80000000 && result.maximum_ns == 1000 &&
+					result.buckets.front() == 80000);
+		};
+		AtomicDurationHistogram atomic;
+		ContendedDurationHistogram contended;
+		observe_concurrently(atomic);
+		observe_concurrently(contended);
 		std::cout << "fixed histogram boundaries, saturation and concurrent observations passed\n";
 	} catch (const std::exception &error) {
 		std::cerr << error.what() << '\n';
