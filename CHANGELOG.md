@@ -55,22 +55,31 @@ releases, so entries are dated.
 
 ### Performance
 
-ns per `add(1)` per thread, every thread adding to one counter, best of 5, shared hosts,
-two readings each. `AtomicCounter` is the compare-exchange loop; the `ContendedCounter`
-column is `AtomicCounter` as of `9207dd3`, whose `add(1)` compiles to the same
-instructions as `ContendedCounter::add(1)`. Measured for review audit CA9 on the M4 Pro
-and the i9-9980HK.
+ns per `add(1)` per thread, every thread adding to one counter, best of 5, two runs each
+(`metrics_counter_bench`, `-O3`; each host held under `quiet strict`). `AtomicCounter` is the
+compare-exchange loop of the start, `AtomicCounter9207dd3` its `fetch_add` fast path as of
+`9207dd3`, which compiles to the same hot path as `ContendedCounter::add(1)`.
 
-| threads | M4 Pro `AtomicCounter` | M4 Pro `ContendedCounter` | i9 `AtomicCounter` | i9 `ContendedCounter` |
-|---|---|---|---|---|
-| 2 | 5.3, 5.5 | 7.4, 7.5 | 60.6, 66.6 | 36.9, 45.5 |
-| 4 | 64.4, 68.0 | 32.3, 32.8 | 223, 268 | 86, 90 |
-| 8 | 322, 340 | 161, 169 | 591, 782 | 187, 187 |
+| threads | M4 Pro `AtomicCounter` | M4 Pro `ContendedCounter` | M4 Pro `AtomicCounter9207dd3` | i9 `AtomicCounter` | i9 `ContendedCounter` | i9 `AtomicCounter9207dd3` |
+|---|---|---|---|---|---|---|
+| 1 | 2.1, 2.1 | 1.9, 1.9 | 2.0 | 7.8, 8.2 | 7.5, 7.8 | 7.5 |
+| 2 | 5.3, 5.2 | 6.8, 7.1 | 7.8 | 76.4, 67.1 | 50.1, 43.1 | 41.7 |
+| 4 | 68.7, 67.9 | 42.7, 34.1 | 42.9 | 230, 214 | 89.0, 88.3 | 88.6 |
+| 8 | 342, 337 | 200, 194 | 178 | 626, 530 | 192, 180 | 187 |
 
-The fast path is 2.0x faster at 4 and 8 threads on arm64 and 2.6-4.2x on x86_64. At two
-threads on arm64 it is 38% slower than the compare-exchange loop (a bare `fetch_add`
-costs 6.5 ns there), so `AtomicCounter` is the counter for little contention.
+`ContendedCounter` is 1.7-1.8x faster than `AtomicCounter` at 4 and 8 threads on the M4 Pro
+and 2.5-3.1x on the i9, and 1.5x faster at 2 threads on the i9. At two threads on the M4 Pro
+it is about 30% slower (a bare `fetch_add` costs 7.0 ns there), so `AtomicCounter` is the
+counter for little contention. `AtomicCounter` and the start's loop agree within the noise at
+every thread count, and `AtomicCounter::add` has the same instructions as at the start on
+arm64 and x86_64.
 
-This corrects earlier entries of this date: the speedup on arm64 is 2.0x, not 2.7x (65.7
+`observe` on a histogram, one thread, ns per observation (`metrics_bench`, three readings per
+run, two runs): owner `DurationHistogram<>` 2.4-2.7 on the M4 Pro (3.3-3.5 at the start) and
+6.0-6.8 on the i9 (7.2-8.0); `AtomicDurationHistogram` 2.9-3.2 (3.8-4.0) and 17.8-18.9
+(18.3-21.1); `ContendedDurationHistogram` 2.8-3.1 and 17.3-18.1, at 288 bytes instead of 144.
+The owner histogram compiles to the same instructions as at `9207dd3`.
+
+This corrects earlier entries of this date: the speedup on arm64 is 1.7-2.0x, not 2.7x (65.7
 to 24.5 ns at 4 threads, 404 to 154 ns at 8 threads, measured on a busy host), and one
 and two threads were not unchanged.

@@ -110,18 +110,24 @@ reader, and runs under ThreadSanitizer.
 
 ## 📊 Performance
 
-ns per `add(1)` per thread, every thread adding to one counter, best of 5 (a shared host,
-two readings each):
+ns per `add(1)` per thread, every thread adding to one counter, best of 5, two runs each
+(`metrics_counter_bench`, `-O3`, a quiet host):
 
-| | 2 threads | 4 threads | 8 threads |
-|---|---|---|---|
-| `AtomicCounter`, Apple M4 Pro | 5.3, 5.5 | 64.4, 68.0 | 322, 340 |
-| `ContendedCounter`, Apple M4 Pro | 7.4, 7.5 | 32.3, 32.8 | 161, 169 |
-| `AtomicCounter`, Intel i9-9980HK | 60.6, 66.6 | 223, 268 | 591, 782 |
-| `ContendedCounter`, Intel i9-9980HK | 36.9, 45.5 | 86, 90 | 187, 187 |
+| | 1 thread | 2 threads | 4 threads | 8 threads |
+|---|---|---|---|---|
+| `AtomicCounter`, Apple M4 Pro | 2.1, 2.1 | 5.3, 5.2 | 68.7, 67.9 | 342, 337 |
+| `ContendedCounter`, Apple M4 Pro | 1.9, 1.9 | 6.8, 7.1 | 42.7, 34.1 | 200, 194 |
+| `AtomicCounter`, Intel i9-9980HK | 7.8, 8.2 | 76.4, 67.1 | 230, 214 | 626, 530 |
+| `ContendedCounter`, Intel i9-9980HK | 7.5, 7.8 | 50.1, 43.1 | 89.0, 88.3 | 192, 180 |
 
-A bare `fetch_add` with no saturation costs 6.5 ns at two threads on the M4 Pro. The
-`add(1)` fast path of `ContendedCounter` is a load, a test and the `fetch_add`.
+A bare `fetch_add` with no saturation costs 7.0 ns at two threads and 190 ns at eight on the M4
+Pro, and 28 and 140 ns on the i9. The `add(1)` fast path of `ContendedCounter` is a load, a test
+and the `fetch_add`.
+
+`observe` on a histogram, one thread, ns per observation (`metrics_bench`): the owner
+`DurationHistogram<>` takes 2.4-2.7 ns on the M4 Pro and 6.0-6.8 ns on the i9;
+`AtomicDurationHistogram` 2.9-3.2 and 17.8-18.9; `ContendedDurationHistogram` 2.8-3.1 and
+17.3-18.1 (288 bytes instead of 144).
 
 ```sh
 cmake -S . -B build && cmake --build build --target metrics_counter_bench
