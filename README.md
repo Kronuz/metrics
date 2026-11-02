@@ -99,27 +99,55 @@ Not for:
 (2,000,000 adds per thread) and reports ns per add per thread, so a higher number at more
 threads is contention. `AtomicCounter` is one word updated by a compare-exchange loop;
 `ContendedCounter` is two words, where an add below 2^32 is one `fetch_add` that never
-retries. Both saturate at 2^64 - 1. The comparator is the obvious hand-written counter,
-a bare relaxed `std::atomic<std::uint64_t>::fetch_add`, which wraps instead of saturating;
-every counter must end at the number of adds made, and the program prints `MISMATCH` when
-one does not. Cells are the better of two runs of best-of-5; "× faster" is `AtomicCounter`'s time over `ContendedCounter`'s, so a value below 1
-is a loss.
+retries. Both saturate at 2^64 - 1. The comparators are the two obvious hand-written counters:
+a saturating compare-exchange loop, and a bare relaxed `std::atomic<std::uint64_t>::fetch_add`,
+which wraps instead of saturating. Every counter must end at the number of adds made, and the
+program prints `MISMATCH` when one does not. Cells are the better of two runs of best-of-5;
+"× faster" is `AtomicCounter`'s time over `ContendedCounter`'s, so a value below 1 is a loss.
 
-| Threads | M4 Pro `AtomicCounter` | M4 Pro `ContendedCounter` | M4 Pro × faster | i9 `AtomicCounter` | i9 `ContendedCounter` | i9 × faster |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 2.1 | 1.9 | 1.11 | 7.8 | 7.5 | 1.04 |
-| 2 | 5.2 | 6.8 | 0.76 | 67.1 | 43.1 | 1.56 |
-| 4 | 67.9 | 34.1 | 1.99 | 214 | 88.3 | 2.42 |
-| 8 | 337 | 194 | 1.74 | 530 | 180 | 2.94 |
+Apple M4 Pro (macOS 26), Apple clang 17.0.0 with `-O3 -DNDEBUG`:
 
-A bare `fetch_add` costs 7.0 ns at two threads and 190 ns at eight on the M4 Pro, and 28 and
-140 ns on the i9. One `observe` on a histogram, one thread (`metrics_bench`, net of the loop
-that draws the values): `DurationHistogram<>` takes 2.4 to 2.7 ns on the M4 Pro and 6.0 to
-6.8 ns on the i9, `AtomicDurationHistogram` 2.9 to 3.2 and 17.8 to 18.9, and
-`ContendedDurationHistogram` 2.8 to 3.1 and 17.3 to 18.1 (288 bytes instead of 144).
+| Threads | `AtomicCounter` | `ContendedCounter` | × faster | CAS loop | bare `fetch_add` |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2.1 | 1.8 | 1.17 | 2.0 | 1.8 |
+| 2 | 5.0 | 7.9 | 0.63 | 4.9 | 6.7 |
+| 4 | 58.3 | 35.4 | 1.65 | 60.0 | 31.1 |
+| 8 | 289 | 130 | 2.22 | 247 | 145 |
 
-Apple M4 Pro (macOS 26) and Intel Core i9-9980HK (macOS 15, x86-64), Apple clang 17.0.0 with
-`-O3 -DNDEBUG`.
+Intel Core i9-9980HK (macOS 15, x86-64), Apple clang 17.0.0 with `-O3 -DNDEBUG`:
+
+| Threads | `AtomicCounter` | `ContendedCounter` | × faster | CAS loop | bare `fetch_add` |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 7.8 | 7.6 | 1.03 | 7.7 | 4.4 |
+| 2 | 63.4 | 41.6 | 1.52 | 67.4 | 23.9 |
+| 4 | 210 | 86.7 | 2.42 | 214 | 67.7 |
+| 8 | 521 | 181 | 2.88 | 536 | 130 |
+
+`ContendedCounter` is ahead of `AtomicCounter` from four threads on both machines and from two
+on the i9, and behind it at two threads on the M4 Pro; `AtomicCounter` and the hand-written
+compare-exchange loop are level. Saturation costs against the bare `fetch_add`: up to 1.2 times
+on the M4 Pro (`ContendedCounter` is 10% ahead of it at 8 threads) and 1.3 to 1.7 times on the
+i9. The 8-thread rows vary by up to 60% between runs.
+
+[`metrics_bench`](bench/bench.cc) times one `observe` of a duration on a histogram, one thread, in
+ns, over 1,048,576 values drawn beforehand (best of five runs, the better of two). The comparators are
+the histograms one writes by hand for the same 15 buckets: `std::lower_bound` over the bounds and
+plain increments, and the same with relaxed atomics (`fetch_add` for the counts and the sum, a
+compare-exchange loop for the maximum); neither saturates. Every histogram sees the same values, and
+the benchmark fails when a snapshot differs from `DurationHistogram<>`'s.
+
+| Histogram | Bytes | M4 Pro | i9 |
+|---|---:|---:|---:|
+| `DurationHistogram<>` | 144 | 2.5 | 3.2 |
+| hand-written, `lower_bound`, plain | 144 | 2.2 | 4.8 |
+| `AtomicDurationHistogram` | 144 | 2.8 | 15.7 |
+| `ContendedDurationHistogram` | 288 | 2.3 | 14.7 |
+| hand-written, `lower_bound`, atomic | 144 | 2.7 | 18.5 |
+
+On the M4 Pro the plain hand-written histogram takes 12% less time than `DurationHistogram<>`, which
+saturates; on the i9 the library is 1.5 times ahead of it. `ContendedDurationHistogram` is ahead of the
+hand-written atomic histogram on both machines (1.2 times on the M4 Pro, 1.3 on the i9), and
+`AtomicDurationHistogram` is level with it on the M4 Pro and 1.2 times ahead on the i9.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DMETRICS_BUILD_BENCH=ON
